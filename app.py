@@ -74,3 +74,14 @@ if uploaded_file:
         answer = search_pdf_and_answer(query, vector_store)
         st.write("### 🤖 Answer:")
         st.write(answer)
+
+
+
+def generate_image_from_text(description):
+    response = openai.Image.create(
+        prompt=description,
+        n=1,
+        size="256x256"  # You can use larger sizes like 512x512 or 1024x1024
+    )
+    image_url = response['data'][0]['url']
+    return image_url
