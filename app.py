@@ -45,25 +45,29 @@ def index_pdf_text(text):
 
 def query_gemini(prompt, context):
     try:
-        # Check if the prompt requests an image
-        if "generate an image" in prompt.lower():
-            # Use Gemini API to generate an image based on the context or prompt
-            response = genai.ImageModel.generate(prompt)
-            image_url = response['data'][0]['url']
-            return image_url
-        else:
-            # Otherwise, generate a text-based response (like an answer to a question)
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(f"Context: {context}\nUser Query: {prompt}")
-            return response.text
+        # Generate text-based response
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(f"Context: {context}\nUser Query: {prompt}")
+        answer = response.text
+        
+        # Check if the answer has a visualizable context (e.g., mentions of objects or scenes)
+        if any(word in answer.lower() for word in ["city", "landscape", "nature", "building", "object", "scene", "character"]):
+            # Generate an image based on the answer (if it describes something visualizable)
+            image_prompt = f"Generate an image of: {answer}"  # Use the answer as the image generation prompt
+            image_response = genai.ImageModel.generate(image_prompt)
+            image_url = image_response['data'][0]['url']
+            return answer, image_url
+        
+        # If not, return just the answer
+        return answer, None
     except Exception as e:
-        return f"Error querying Gemini API: {str(e)}"
+        return f"Error querying Gemini API: {str(e)}", None
 
 def search_pdf_and_answer(query, vector_store):
     docs = vector_store.similarity_search(query, k=3)
     context = "\n".join([doc.page_content for doc in docs])
-    answer = query_gemini(query, context)
-    return answer
+    answer, image_url = query_gemini(query, context)
+    return answer, image_url
 
 # Streamlit UI
 st.title("📄 PDF Chatbot with Gemini API 🤖")
@@ -78,12 +82,14 @@ if uploaded_file:
     vector_store = index_pdf_text(pdf_text)
     st.success("PDF successfully indexed! ✅")
     query = st.text_input("Ask a question or request an image from the PDF:")
+
     if query:
-        result = search_pdf_and_answer(query, vector_store)
+        result, image_url = search_pdf_and_answer(query, vector_store)
         
-        # If the result is a URL, assume it's an image and display it
-        if result.startswith("http"):
-            st.image(result, caption="Generated Image", use_column_width=True)
-        else:
-            st.write("### 🤖 Answer:")
-            st.write(result)
+        # If an image URL is returned, display it
+        if image_url:
+            st.image(image_url, caption="Generated Image", use_column_width=True)
+        
+        # Otherwise, display the text answer
+        st.write("### 🤖 Answer:")
+        st.write(result)
