@@ -1,4 +1,3 @@
-# app.py
 # Standard library imports
 import os
 import tempfile
@@ -50,16 +49,13 @@ def query_gemini(prompt, context):
         response = model.generate_content(f"Context: {context}\nUser Query: {prompt}")
         answer = response.text
         
-        # Check if the answer has a visualizable context (e.g., mentions of objects or scenes)
-        if any(word in answer.lower() for word in ["city", "landscape", "nature", "building", "object", "scene", "character"]):
-            # Generate an image based on the answer (if it describes something visualizable)
-            image_prompt = f"Generate an image of: {answer}"  # Use the answer as the image generation prompt
-            image_response = genai.ImageModel.generate(image_prompt)
-            image_url = image_response['data'][0]['url']
-            return answer, image_url
+        # Always generate an image based on the answer (regardless of content)
+        image_prompt = f"Generate an image of: {answer}"  # Use the answer as the image generation prompt
+        image_response = genai.ImageModel.generate(image_prompt)
+        image_url = image_response['data'][0]['url']
         
-        # If not, return just the answer
-        return answer, None
+        # Return both the text answer and the generated image URL
+        return answer, image_url
     except Exception as e:
         return f"Error querying Gemini API: {str(e)}", None
 
