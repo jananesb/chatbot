@@ -45,9 +45,17 @@ def index_pdf_text(text):
 
 def query_gemini(prompt, context):
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(f"Context: {context}\nUser Query: {prompt}")
-        return response.text
+        # Check if the prompt requests an image
+        if "generate an image" in prompt.lower():
+            # Use Gemini API to generate an image based on the context or prompt
+            response = genai.ImageModel.generate(prompt)
+            image_url = response['data'][0]['url']
+            return image_url
+        else:
+            # Otherwise, generate a text-based response (like an answer to a question)
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(f"Context: {context}\nUser Query: {prompt}")
+            return response.text
     except Exception as e:
         return f"Error querying Gemini API: {str(e)}"
 
@@ -69,12 +77,13 @@ if uploaded_file:
     pdf_text = extract_text_from_pdf(temp_path)
     vector_store = index_pdf_text(pdf_text)
     st.success("PDF successfully indexed! ✅")
-    query = st.text_input("Ask a question from the PDF:")
+    query = st.text_input("Ask a question or request an image from the PDF:")
     if query:
-        answer = search_pdf_and_answer(query, vector_store)
-        st.write("### 🤖 Answer:")
-        st.write(answer)
-        size="256x256"  # You can use larger sizes like 512x512 or 1024x1024
-    )
-    image_url = response['data'][0]['url']
-    return image_url
+        result = search_pdf_and_answer(query, vector_store)
+        
+        # If the result is a URL, assume it's an image and display it
+        if result.startswith("http"):
+            st.image(result, caption="Generated Image", use_column_width=True)
+        else:
+            st.write("### 🤖 Answer:")
+            st.write(result)
