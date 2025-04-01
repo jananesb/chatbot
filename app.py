@@ -8,6 +8,8 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_core.documents import Document
 from sentence_transformers import SentenceTransformer
+from PIL import Image
+import pytesseract
 
 # Configure API with environment variable
 api_key = os.getenv("GOOGLE_API_KEY")
@@ -19,6 +21,18 @@ genai.configure(api_key=api_key)
 # Initialize models
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 embedding_function = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# Function to check if image contains "Check Your Knowledge"
+def is_unwanted_image(image_bytes):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+            tmp_img.write(image_bytes)
+            tmp_img_path = tmp_img.name
+        img = Image.open(tmp_img_path)
+        text = pytesseract.image_to_string(img)
+        return "Check Your Knowledge" in text
+    except:
+        return False
 
 # Function to extract text and images from PDF
 def extract_text_and_images_from_pdf(pdf_path):
@@ -41,9 +55,9 @@ def extract_text_and_images_from_pdf(pdf_path):
 
             # Apply filtering conditions to remove unwanted images
             if (
-                "check_your_knowledge" in base_image.get("name", "").lower()
-                or width < 100  # Ignore small images (headers/logos)
+                width < 100  # Ignore small images (headers/logos)
                 or height < 50
+                or is_unwanted_image(image_bytes)  # OCR-based filtering
             ):
                 continue  # Skip unwanted images
 
