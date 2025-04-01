@@ -1,16 +1,7 @@
-# app.py
-# Standard library imports
 import os
 import tempfile
-
-# Third-party imports
 import streamlit as st
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    st.error("PyMuPDF not installed correctly. Please check requirements.txt.")
-    st.stop()
-
+import fitz  # PyMuPDF
 import google.generativeai as genai
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -34,21 +25,32 @@ def extract_text_and_images_from_pdf(pdf_path):
     doc = fitz.open(pdf_path)
     text_per_page = []
     images_per_page = {}
+    
     for page_num in range(len(doc)):
         page = doc[page_num]
         text = page.get_text("text")
         text_per_page.append((page_num, text))
         images = page.get_images(full=True)
         images_per_page[page_num] = []
+
         for img in images:
             xref = img[0]
             base_image = doc.extract_image(xref)
             image_bytes = base_image["image"]
-            # Filter out "Check Your Knowledge" image based on metadata or name (if available)
-            if "check_your_knowledge" not in base_image.get("name", "").lower():
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
-                    tmp_img.write(image_bytes)
-                    images_per_page[page_num].append(tmp_img.name)
+            width, height = base_image["width"], base_image["height"]
+
+            # Apply filtering conditions to remove unwanted images
+            if (
+                "check_your_knowledge" in base_image.get("name", "").lower()
+                or width < 100  # Ignore small images (headers/logos)
+                or height < 50
+            ):
+                continue  # Skip unwanted images
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                tmp_img.write(image_bytes)
+                images_per_page[page_num].append(tmp_img.name)
+    
     doc.close()
     return text_per_page, images_per_page
 
@@ -77,7 +79,6 @@ def query_gemini(prompt, context):
 
 # Function to search PDF and answer with images
 def search_pdf_and_answer(query, vector_store, images_per_page):
-    # Perform similarity search to get relevant text chunks
     docs = vector_store.similarity_search(query, k=3)
     context = "\n".join([doc.page_content for doc in docs])
     answer = query_gemini(query, context)
@@ -89,7 +90,6 @@ def search_pdf_and_answer(query, vector_store, images_per_page):
     relevant_images = []
     for page_num in page_nums:
         if page_num in images_per_page:
-            # Include only images from pages with matching context
             relevant_images.extend(images_per_page[page_num])
     
     return answer, relevant_images
