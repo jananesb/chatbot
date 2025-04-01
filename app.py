@@ -44,9 +44,11 @@ def extract_text_and_images_from_pdf(pdf_path):
             xref = img[0]
             base_image = doc.extract_image(xref)
             image_bytes = base_image["image"]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
-                tmp_img.write(image_bytes)
-                images_per_page[page_num].append(tmp_img.name)
+            # Filter out "Check Your Knowledge" image based on metadata or name (if available)
+            if "check_your_knowledge" not in base_image.get("name", "").lower():
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+                    tmp_img.write(image_bytes)
+                    images_per_page[page_num].append(tmp_img.name)
     doc.close()
     return text_per_page, images_per_page
 
