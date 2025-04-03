@@ -21,7 +21,7 @@ genai.configure(api_key=api_key)
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 embedding_function = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# Function to extract text and images from PDF with better metadata and contextual understanding
+# Extract text and images from PDF with metadata
 def extract_text_and_images_from_pdf(pdf_path):
     doc = fitz.open(pdf_path)
     text_per_page = []
@@ -33,22 +33,6 @@ def extract_text_and_images_from_pdf(pdf_path):
         text = page.get_text("text")
         text_per_page.append((page_num, text))
         
-        # Get structured text with more detail
-        text_dict = page.get_text("dict")
-        blocks = text_dict.get("blocks", [])
-        
-        # Get text by regions for better context association
-        text_regions = []
-        for block in blocks:
-            if block.get("type") == 0:  # Text block
-                block_text = ""
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        block_text += span.get("text", "")
-                if block_text:
-                    rect = block.get("bbox")
-                    text_regions.append((block_text, rect))
-        
         images = page.get_images(full=True)
         images_per_page[page_num] = []
 
@@ -58,59 +42,30 @@ def extract_text_and_images_from_pdf(pdf_path):
             image_bytes = base_image["image"]
             width, height = base_image["width"], base_image["height"]
             image_name = base_image.get("name", "").lower()
-            
-            # Enhanced filtering to remove unwanted images
-            if (
-                width < 100 or 
-                height < 50 or
-                (width * height) < 12000 or  # Increased area threshold
-                "check" in image_name or
-                "header" in image_name or
-                "footer" in image_name or
-                "logo" in image_name or
-                "icon" in image_name or
-                "bullet" in image_name or
-                "button" in image_name
-            ):
-                continue  # Skip unwanted images
-            
-            # For better context, use surrounding paragraphs
-            # We'll use the page text but also remember which page this came from
-            # for later cross-referencing
-            surrounding_text = text
-            
-            # Caption detection: text immediately before or after image
-            caption = ""
-            # Simple heuristic: look for text with terms like "figure", "diagram", "image"
-            caption_indicators = ["figure", "fig", "diagram", "image", "chart", "graph", "table", "illustration"]
-            
-            # Check for captions in nearby text
-            for text_block, _ in text_regions:
-                lower_text = text_block.lower()
-                if any(indicator in lower_text for indicator in caption_indicators):
-                    caption = text_block
-                    break
 
+            # Skip small/unimportant images
+            if width < 100 or height < 50 or (width * height) < 12000:
+                continue
+
+            # Save image to temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
                 tmp_img.write(image_bytes)
                 img_path = tmp_img.name
                 images_per_page[page_num].append(img_path)
                 
-                # Store image metadata for relevance matching
+                # Store metadata
                 image_metadata[img_path] = {
                     'page': page_num,
-                    'surrounding_text': surrounding_text,
-                    'caption': caption,
+                    'text': text,
                     'width': width,
                     'height': height,
-                    'area': width * height,
-                    'aspect_ratio': width / height if height > 0 else 0
+                    'area': width * height
                 }
     
     doc.close()
     return text_per_page, images_per_page, image_metadata
 
-# Function to index PDF text with page metadata
+# Index PDF text
 def index_pdf_text(text_per_page):
     documents = []
     text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -121,132 +76,73 @@ def index_pdf_text(text_per_page):
             documents.append(doc)
     return FAISS.from_documents(documents, embedding_function)
 
-# Function to query Gemini API with concise prompt
+# Query Gemini AI
 def query_gemini(prompt, context):
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")  # Valid model as of March 2025
-        response = model.generate_content(
-            f"Context: {context}\nUser Query: {prompt}\nProvide a short and concise answer suitable for exam preparation."
-        )
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(f"Context: {context}\nUser Query: {prompt}")
         return response.text
     except Exception as e:
         return f"Error querying Gemini API: {str(e)}"
 
-# Function to compute semantic similarity between query and text
+# Compute similarity
 def compute_similarity(text1, text2):
     if not text1 or not text2:
         return 0
     
     try:
-        # Generate embeddings
         emb1 = embedding_model.encode([text1])[0]
         emb2 = embedding_model.encode([text2])[0]
-        
-        # Compute cosine similarity
         similarity = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
-        return float(similarity)  # Ensure it's a Python float
+        return float(similarity)
     except Exception as e:
         st.error(f"Error computing similarity: {str(e)}")
         return 0.0
 
-# Function to rank images by two-step relevance
+# Rank images by relevance
 def rank_images_by_relevance(query, candidate_images, image_metadata, context_text):
     if not candidate_images:
         return []
-    
-    # First pass: compute similarity scores
+
     image_scores = []
-    
-    # Also compute similarity between query and overall context
-    query_context_similarity = compute_similarity(query, context_text)
-    
     for img_path in candidate_images:
         metadata = image_metadata.get(img_path, {})
-        
-        # Get text associated with this image
-        surrounding_text = metadata.get('surrounding_text', '')
-        caption = metadata.get('caption', '')
-        
-        # Compute multiple similarity scores
+        surrounding_text = metadata.get('text', '')
+
         text_similarity = compute_similarity(query, surrounding_text)
-        caption_similarity = compute_similarity(query, caption) if caption else 0
-        
-        # Area-based score (normalized to 0-0.2 range)
+
+        # Area factor (importance of large images)
         area = metadata.get('area', 0)
         area_factor = min(0.2, area / 500000)
-        
-        # Caption bonus - images with relevant captions are usually more important
-        caption_bonus = 0.15 if caption_similarity > 0.4 else 0
-        
-        # Check if image is likely a diagram/chart based on aspect ratio
-        aspect_ratio = metadata.get('aspect_ratio', 0)
-        is_likely_diagram = 0.7 < aspect_ratio < 1.5  # Many diagrams are roughly square-ish
-        diagram_bonus = 0.1 if is_likely_diagram else 0
-        
-        # Compute final score
-        # Weight caption similarity more highly if present
-        final_score = text_similarity * 0.6 + caption_similarity * 0.3 + area_factor + caption_bonus + diagram_bonus
-        
-        # Additional check: if query-context similarity is high but image similarity is low, 
-        # this might be an irrelevant image on a relevant page
-        if query_context_similarity > 0.6 and text_similarity < 0.3:
-            final_score *= 0.5  # Penalize
-        
-        image_scores.append((img_path, final_score))
-    
-    # Sort by score (descending)
-    image_scores.sort(key=lambda x: x[1], reverse=True)
-    
-    # Apply a higher threshold for acceptance
-    threshold = 0.35  # Increased from previous 0.25
-    relevant_images = [(img, score) for img, score in image_scores if score > threshold]
-    
-    # Second pass: filter out very similar images (avoid duplicates)
-    unique_images = []
-    for i, (img1, score1) in enumerate(relevant_images):
-        is_unique = True
-        for img2, _ in unique_images:
-            metadata1 = image_metadata.get(img1, {})
-            metadata2 = image_metadata.get(img2, {})
-            
-            # If images are from same page and have similar size/position, likely duplicates
-            if (
-                metadata1.get('page') == metadata2.get('page') and
-                abs(metadata1.get('area', 0) - metadata2.get('area', 0)) / max(metadata1.get('area', 1), 1) < 0.2
-            ):
-                is_unique = False
-                break
-        
-        if is_unique:
-            unique_images.append((img1, score1))
-    
-    # Limit to top 2 most relevant images to avoid irrelevant ones
-    return [img for img, _ in unique_images[:2]]
 
-# Improved function to search PDF and answer with relevant images
+        final_score = text_similarity * 0.7 + area_factor
+
+        if final_score > 0.4:
+            image_scores.append((img_path, final_score))
+
+    # Sort and return top 2 most relevant images
+    image_scores.sort(key=lambda x: x[1], reverse=True)
+    return [img for img, _ in image_scores[:2]]
+
+# Search PDF and answer
 def search_pdf_and_answer(query, vector_store, images_per_page, image_metadata):
-    # Get relevant document chunks
     docs = vector_store.similarity_search(query, k=3)
     context = "\n".join([doc.page_content for doc in docs])
     answer = query_gemini(query, context)
-    
-    # Identify pages containing relevant text
+
+    # Get relevant pages
     page_nums = {doc.metadata['page'] for doc in docs}
-    
-    # Get candidate images from relevant pages
-    candidate_images = [img for page_num in page_nums for img in images_per_page.get(page_num, [])]
-    
-    # No candidate images found
+    candidate_images = [img for page in page_nums for img in images_per_page.get(page, [])]
+
     if not candidate_images:
         return answer, [], "No relevant images found for this query."
-    
-    # Use advanced ranking function
+
     relevant_images = rank_images_by_relevance(query, candidate_images, image_metadata, context)
-    
+
     message = ""
     if not relevant_images:
         message = "No relevant images found for this query."
-    
+
     return answer, relevant_images, message
 
 # Streamlit UI
@@ -264,14 +160,16 @@ if uploaded_file and not st.session_state.pdf_processed:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_file.write(uploaded_file.read())
         temp_path = tmp_file.name
+
     with st.spinner("Processing PDF... Please wait..."):
         text_per_page, images_per_page, image_metadata = extract_text_and_images_from_pdf(temp_path)
         vector_store = index_pdf_text(text_per_page)
-        
+
         st.session_state.vector_store = vector_store
         st.session_state.images_per_page = images_per_page
         st.session_state.image_metadata = image_metadata
         st.session_state.pdf_processed = True
+
     st.success("PDF successfully indexed! ✅")
 
 query = st.text_input("Ask a question from the PDF:")
@@ -279,15 +177,12 @@ query = st.text_input("Ask a question from the PDF:")
 if query and st.session_state.pdf_processed:
     with st.spinner("Generating response..."):
         answer, relevant_images, message = search_pdf_and_answer(
-            query, 
-            st.session_state.vector_store, 
-            st.session_state.images_per_page,
-            st.session_state.image_metadata
+            query, st.session_state.vector_store, st.session_state.images_per_page, st.session_state.image_metadata
         )
-    
+
     st.write("### 🤖 Answer:")
     st.write(answer)
-    
+
     if relevant_images:
         st.write("#### Relevant Images from PDF:")
         for img_path in relevant_images:
